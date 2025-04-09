@@ -447,6 +447,16 @@ if __name__ == '__main__':
                 fps=args.fps,
                 num_frames=args.num_frames,
             )
+            
+            # Debugpy snippet
+            print("attach debugger now")
+            import debugpy
+            # check if already listening
+            if not debugpy.is_client_connected():
+                debugpy.listen(5679)
+                debugpy.wait_for_client()
+            debugpy.breakpoint()
+            
         print(f"Processing completed. Output saved in {tmpdirname}/{args.seq_name}")
     else:
         # Launch Gradio demo

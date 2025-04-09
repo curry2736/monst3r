@@ -1,6 +1,6 @@
-# minimal requirements for inference
-torch
-torchvision
+ # minimal requirements for inference
+#torch
+#torchvision
 roma
 gradio
 matplotlib
@@ -11,10 +11,10 @@ einops
 gdown
 trimesh
 pyglet<2
-huggingface-hub[torch]>=0.22
+# huggingface-hub[torch]>=0.22
 
 # for camera trajectory
 evo
 
 # for sam2, customized version
--e third_party/sam2
+-e third_party_monst3r/sam2

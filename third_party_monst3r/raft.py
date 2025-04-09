@@ -7,6 +7,7 @@ from os.path import dirname, join
 RAFT_PATH_ROOT = join(dirname(__file__), 'RAFT')
 RAFT_PATH_CORE = join(RAFT_PATH_ROOT, 'core')
 sys.path.append(RAFT_PATH_CORE)
+print(f"Added {RAFT_PATH_CORE} to sys.path")
 from raft import RAFT, RAFT2  # nopep8
 from utils.utils import InputPadder  # nopep8
 
@@ -54,7 +55,7 @@ def load_RAFT(model_path=None):
         net = RAFT(args)
     else: # RAFT2
         parser = argparse.ArgumentParser()
-        parser.add_argument('--cfg', help='experiment configure file name', default="third_party/RAFT/core/configs/congif_spring_M.json")
+        parser.add_argument('--cfg', help='experiment configure file name', default=join(RAFT_PATH_CORE, "configs/congif_spring_M.json"))
         parser.add_argument('--model', help='checkpoint path', default=model_path)
         parser.add_argument('--device', help='inference device', type=str, default='cpu')
         args = parse_args(parser)
@@ -76,5 +77,5 @@ def load_RAFT(model_path=None):
     return net.eval()
 
 if __name__ == "__main__":
-    net = load_RAFT(model_path='third_party/RAFT/models/Tartan-C-T432x960-M.pth')
+    net = load_RAFT(model_path='third_party_monst3r/RAFT/models/Tartan-C-T432x960-M.pth')
     print(net)

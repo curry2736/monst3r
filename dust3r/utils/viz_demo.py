@@ -6,7 +6,7 @@ import torch
 import os
 import cv2
 from dust3r.viz import add_scene_cam, CAM_COLORS, OPENGL, pts3d_to_trimesh, cat_meshes
-from third_party.raft import load_RAFT
+from third_party_monst3r.raft import load_RAFT
 from datasets_preprocess.sintel_get_dynamics import compute_optical_flow
 from dust3r.utils.flow_vis import flow_to_image
 
@@ -60,8 +60,8 @@ def get_dynamic_mask_from_pairviewer(scene, flow_net=None, both_directions=False
     get the dynamic mask from the pairviewer
     """
     if flow_net is None:
-        # flow_net = load_RAFT(model_path="third_party/RAFT/models/Tartan-C-T-TSKH-spring540x960-M.pth").to('cuda').eval() # sea-raft
-        flow_net = load_RAFT(model_path="third_party/RAFT/models/raft-things.pth").to('cuda').eval()
+        # flow_net = load_RAFT(model_path="third_party_monst3r/RAFT/models/Tartan-C-T-TSKH-spring540x960-M.pth").to('cuda').eval() # sea-raft
+        flow_net = load_RAFT(model_path="third_party_monst3r/RAFT/models/raft-things.pth").to('cuda').eval()
 
     imgs = scene.imgs
     img1 = torch.from_numpy(imgs[0]*255).permute(2,0,1)[None]                       # (B, 3, H, W)

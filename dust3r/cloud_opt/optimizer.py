@@ -4,15 +4,18 @@ import torch.nn as nn
 import torch.nn.functional as F
 from tqdm import tqdm
 import contextlib
+import os 
 
 from dust3r.cloud_opt.base_opt import BasePCOptimizer, edge_str
 from dust3r.cloud_opt.pair_viewer import PairViewer
 from dust3r.utils.geometry import xy_grid, geotrf, depthmap_to_pts3d
 from dust3r.utils.device import to_cpu, to_numpy
 from dust3r.utils.goem_opt import DepthBasedWarping, OccMask, WarpImage, depth_regularization_si_weighted, tum_to_pose_matrix
-from third_party.raft import load_RAFT
+from third_party_monst3r.raft import load_RAFT
 from sam2.build_sam import build_sam2_video_predictor
-sam2_checkpoint = "third_party/sam2/checkpoints/sam2.1_hiera_large.pt"
+
+monst3r_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../..")
+sam2_checkpoint = os.path.join(monst3r_dir, "third_party_monst3r/sam2/checkpoints/sam2.1_hiera_large.pt")
 model_cfg = "configs/sam2.1/sam2.1_hiera_l.yaml"
 
 def smooth_L1_loss_fn(estimate, gt, mask, beta=1.0, per_pixel_thre=50.):
@@ -108,7 +111,7 @@ class PointCloudOptimizer(BasePCOptimizer):
             ))
             if (self.n_imgs - window_size) % self.window_stride != 0:
                 self.window_starts.append(self.n_imgs - window_size)
-            
+
             self.num_windows = len(self.window_starts)
             # pre-compute pixel weights
             self.register_buffer('_weight_i', ParameterStack(
@@ -118,7 +121,7 @@ class PointCloudOptimizer(BasePCOptimizer):
             # precompute aa
             self.register_buffer('_stacked_pred_i', ParameterStack(self.pred_i, self.str_edges, fill=self.max_area))
             self.register_buffer('_stacked_pred_j', ParameterStack(self.pred_j, self.str_edges, fill=self.max_area))
-            
+
         self.register_buffer('_ei', torch.tensor([i for i, j in self.edges]))
         self.register_buffer('_ej', torch.tensor([j for i, j in self.edges]))
         self.total_area_i = sum([self.im_areas[i] for i, j in self.edges])
@@ -153,10 +156,10 @@ class PointCloudOptimizer(BasePCOptimizer):
         required_keys = ['depths', 'intrinsics', 'poses']
         assert all(k in self.prev_video_results for k in required_keys), \
             f"prev_video_results is missing required fields: {required_keys}"
-        
+
         assert self.prev_video_results['depths'][0].shape == self.im_depthmaps[0].shape, \
             f"the depths of previous video do not match: {self.prev_video_results['depths'][0].shape} vs {self.im_depthmaps[0].shape}"
-        
+
         assert self.overlap_size <= len(self.prev_video_results['depths']), \
             f"the frame number of previous video is insufficient, at least {self.overlap_size} frames are required"
 
@@ -172,7 +175,7 @@ class PointCloudOptimizer(BasePCOptimizer):
             self.im_depthmaps[i].requires_grad_(False)
         if self.shared_focal:
             self.im_focals[0].requires_grad_(False)
-            
+
     def _get_window_bounds(self, window_idx):
         """Get the window interval and the optimized interval"""
         start = self.window_starts[window_idx]
@@ -198,7 +201,7 @@ class PointCloudOptimizer(BasePCOptimizer):
             self.frozen_im_poses = ParameterStack(self.im_poses[win_start:opt_start], is_param=True).requires_grad_(False)
             self.opt_im_poses = ParameterStack(self.im_poses[opt_start:win_end], is_param=True).requires_grad_(True)
             self.opt_im_focals = ParameterStack(self.im_focals, is_param=True).requires_grad_(False)
-            
+
         self.win_init_depthmap = self.init_depthmap[win_start:win_end]
         self.win_dynamic_masks = self.dynamic_masks[win_start:win_end]
         self.win_imshapes = self.imshapes[win_start:win_end]
@@ -206,7 +209,7 @@ class PointCloudOptimizer(BasePCOptimizer):
         self.register_buffer('_win_pp', torch.tensor([(w/2, h/2) for h, w in self.win_imshapes], device=self.device))
         self.register_buffer('_win_grid', ParameterStack(
             [xy_grid(W, H, device=self.device) for H, W in self.win_imshapes], fill=self.max_area))
-        
+
         valid_i = (self._ei >= win_start) & (self._ei < win_end)
         valid_j = (self._ej >= win_start) & (self._ej < win_end)
         valid_edges = valid_i & valid_j
@@ -241,7 +244,7 @@ class PointCloudOptimizer(BasePCOptimizer):
                 depth_param.data[:] = self.opt_im_depthmaps[idx].view(self.imshapes[i][0], self.imshapes[i][1])
                 pose_param = self.im_poses[i]
                 pose_param.data[:] = self.opt_im_poses[idx]
-                
+
                 if not self.shared_focal:
                     focal_param = self.im_focals[i]
                     focal_param.data[:] = self.opt_im_focals[idx]
@@ -255,14 +258,21 @@ class PointCloudOptimizer(BasePCOptimizer):
                 depth_param.data[:] = self.opt_im_depthmaps[idx].view(self.imshapes[i][0], self.imshapes[i][1])
                 pose_param = self.im_poses[i]
                 pose_param.data[:] = self.opt_im_poses[idx]
-            
+
     def get_flow(self, sintel_ckpt=False): #TODO: test with gt flow
         print('precomputing flow...')
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
         get_valid_flow_mask = OccMask(th=3.0)
         pair_imgs = [np.stack(self.imgs)[self._ei], np.stack(self.imgs)[self._ej]]
 
-        flow_net = load_RAFT() if sintel_ckpt else load_RAFT("third_party/RAFT/models/Tartan-C-T-TSKH-spring540x960-M.pth")
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        flow_net = (
+            load_RAFT()
+            if sintel_ckpt
+            else load_RAFT(
+                os.path.join(current_dir, "../../third_party_monst3r/RAFT/models/Tartan-C-T-TSKH-spring540x960-M.pth")
+            )
+        )
         flow_net = flow_net.to(device)
         flow_net.eval()
 
@@ -335,7 +345,7 @@ class PointCloudOptimizer(BasePCOptimizer):
             T_j.append(pair_viewer.get_im_poses()[1][:3, 3:])
             depth_maps_i.append(pair_viewer.get_depthmaps()[0])
             depth_maps_j.append(pair_viewer.get_depthmaps()[1])
-        
+
         self.intrinsics_i = torch.stack(intrinsics_i).to(self.flow_ij.device)
         self.intrinsics_j = torch.stack(intrinsics_j).to(self.flow_ij.device)
         self.R_i = torch.stack(R_i).to(self.flow_ij.device)
@@ -360,7 +370,7 @@ class PointCloudOptimizer(BasePCOptimizer):
             j_idx = self._ej[i]
             self.dynamic_masks[i_idx].append(err_map_i[i])
             self.dynamic_masks[j_idx].append(err_map_j[i])
-        
+
         for i in range(self.n_imgs):
             self.dynamic_masks[i] = torch.stack(self.dynamic_masks[i]).mean(dim=0) > self.motion_mask_thre
 
@@ -383,10 +393,10 @@ class PointCloudOptimizer(BasePCOptimizer):
                 frame_tensors = torch.from_numpy(np.array((self.imgs))).permute(0, 3, 1, 2).to(device)
                 inference_state = predictor.init_state(video_path=frame_tensors)
                 mask_list = [self.dynamic_masks[i] for i in range(self.n_imgs)]
-                
+
                 ann_obj_id = 1
                 self.sam2_dynamic_masks = [[] for _ in range(self.n_imgs)]
-        
+
                 # Process even frames
                 predictor.reset_state(inference_state)
                 for idx, mask in enumerate(mask_list):
@@ -406,7 +416,7 @@ class PointCloudOptimizer(BasePCOptimizer):
                 for out_frame_idx in range(self.n_imgs):
                     if out_frame_idx % 2 == 0:
                         self.sam2_dynamic_masks[out_frame_idx] = video_segments[out_frame_idx][ann_obj_id]
-        
+
                 # Process odd frames
                 predictor.reset_state(inference_state)
                 for idx, mask in enumerate(mask_list):
@@ -426,13 +436,13 @@ class PointCloudOptimizer(BasePCOptimizer):
                 for out_frame_idx in range(self.n_imgs):
                     if out_frame_idx % 2 == 1:
                         self.sam2_dynamic_masks[out_frame_idx] = video_segments[out_frame_idx][ann_obj_id]
-        
+
                 # Update dynamic masks
                 for i in range(self.n_imgs):
                     self.sam2_dynamic_masks[i] = torch.from_numpy(self.sam2_dynamic_masks[i][0]).to(device)
                     self.dynamic_masks[i] = self.dynamic_masks[i].to(device)
                     self.dynamic_masks[i] = self.dynamic_masks[i] | self.sam2_dynamic_masks[i]
-        
+
                 # Clean up
                 del predictor
         finally:
@@ -440,7 +450,6 @@ class PointCloudOptimizer(BasePCOptimizer):
             if device == 'cuda':
                 torch.backends.cuda.matmul.allow_tf32 = prev_allow_tf32
                 torch.backends.cudnn.allow_tf32 = prev_allow_cudnn_tf32
-
 
     def _check_all_imgs_are_selected(self, msk):
         self.msk = torch.from_numpy(np.array(msk, dtype=bool)).to(self.device)
@@ -531,7 +540,7 @@ class PointCloudOptimizer(BasePCOptimizer):
         else:
             log_focals = torch.stack(list(self.im_focals), dim=0)
         return (log_focals / self.focal_break).exp()
-    
+
     def get_win_focals(self):
         if self.shared_focal:
             log_focals = torch.stack([self.opt_im_focals[0]] * self.window_size, dim=0)
@@ -554,7 +563,7 @@ class PointCloudOptimizer(BasePCOptimizer):
 
     def get_principal_points_batch(self):
         return self._pp + 10 * self.im_pp
-    
+
     def get_win_principal_points(self):
         return self._win_pp + 10 * self.win_im_pp
 
@@ -571,7 +580,7 @@ class PointCloudOptimizer(BasePCOptimizer):
         K[:, :2, 2] = self.get_principal_points()
         K[:, 2, 2] = 1
         return K
-    
+
     def get_win_intrinsics(self):
         K = torch.zeros((self.window_size, 3, 3), device=self.device)
         focals = self.get_win_focals().flatten()
@@ -583,7 +592,7 @@ class PointCloudOptimizer(BasePCOptimizer):
     def get_im_poses_batch(self):  # cam to world
         cam2world = self._get_poses(self.im_poses)
         return cam2world
-    
+
     def get_win_im_poses(self):  # cam to world
         if self.window_idx == 0 and self.prev_video_results is None:
             cam2world = self._get_poses(self.opt_im_poses)
@@ -592,7 +601,7 @@ class PointCloudOptimizer(BasePCOptimizer):
             opt_cam2world = self._get_poses(self.opt_im_poses)
             cam2world = torch.cat([frozen_cam2world, opt_cam2world])
         return cam2world
-    
+
     def get_opt_im_poses(self):  # cam to world
         cam2world = self._get_poses(self.opt_im_poses)
         return cam2world
@@ -626,7 +635,7 @@ class PointCloudOptimizer(BasePCOptimizer):
             return self._set_depthmap_batch(idx, depth, force)
         else:
             return self._set_depthmap_non_batch(idx, depth, force)
-    
+
     def preset_depthmap(self, known_depthmaps, msk=None, requires_grad=False):
         self._check_all_imgs_are_selected(msk)
 
@@ -640,7 +649,7 @@ class PointCloudOptimizer(BasePCOptimizer):
                 self.im_depthmaps.requires_grad_(True)
             else:
                 self.im_depthmaps.requires_grad_(False)
-    
+
     def _set_init_depthmap(self):
         depth_maps = self.get_depthmaps(raw=True)
         self.init_depthmap = [dm.detach().clone() for dm in depth_maps]
@@ -650,7 +659,7 @@ class PointCloudOptimizer(BasePCOptimizer):
         if not raw:
             res = [dm[:h*w].view(h, w) for dm, (h, w) in zip(res, self.imshapes)]
         return res
-    
+
     def get_win_init_depthmaps(self, raw=False):
         res = self.win_init_depthmap
         if not raw:
@@ -662,7 +671,7 @@ class PointCloudOptimizer(BasePCOptimizer):
         if not raw:
             res = [dm[:h*w].view(h, w) for dm, (h, w) in zip(res, self.imshapes)]
         return res
-    
+
     def get_win_depthmaps(self, raw=False):
         if self.window_idx == 0 and self.prev_video_results is None:
             res = self.opt_im_depthmaps.exp()
@@ -694,7 +703,7 @@ class PointCloudOptimizer(BasePCOptimizer):
         rel_ptmaps = _fast_depthmap_to_pts3d(depth, self._grid, focals, pp=pp)
         # project to world frame
         return geotrf(im_poses, rel_ptmaps)
-    
+
     def depth_to_win_pts3d(self):
         # Get depths and  projection params if not provided
         focals = self.get_win_focals()
@@ -720,13 +729,13 @@ class PointCloudOptimizer(BasePCOptimizer):
         rel_ptmaps = [depthmap_to_pts3d(depth[i][None], focal_ex(i), pp=pp[i:i+1])[0] for i in range(im_poses.shape[0])]
         # project to world frame
         return [geotrf(pose, ptmap) for pose, ptmap in zip(im_poses, rel_ptmaps)]
-    
+
     def get_pts3d_batch(self, raw=False, **kwargs):
         res = self.depth_to_pts3d()
         if not raw:
             res = [dm[:h*w].view(h, w, 3) for dm, (h, w) in zip(res, self.imshapes)]
         return res
-    
+
     def get_win_pts3d(self, raw=False, **kwargs):
         res = self.depth_to_win_pts3d()
         if not raw:
@@ -738,12 +747,12 @@ class PointCloudOptimizer(BasePCOptimizer):
             return self.get_pts3d_batch(raw, **kwargs)
         else:
             return self.depth_to_pts3d_partial()
-        
+
     def get_win_pw_scale(self):
         scale = self.opt_pw_poses[:, -1].exp()  # (n_edges,)
         scale = scale * self.get_pw_norm_scale_factor()
         return scale
-        
+
     def get_win_pw_poses(self):  # cam to world
         RT = self._get_poses(self.opt_pw_poses)
         scaled_RT = RT.clone()
@@ -815,7 +824,7 @@ class PointCloudOptimizer(BasePCOptimizer):
                 self.flow_loss_weight * flow_loss + self.depth_regularize_weight * depth_prior_loss
 
         return loss, flow_loss
-    
+
     def forward_window_wise(self, epoch=9999):
         pw_poses = self.get_win_pw_poses()  # cam-to-world
 
@@ -872,9 +881,9 @@ class PointCloudOptimizer(BasePCOptimizer):
 
         loss = (li + lj) * 1 + self.temporal_smoothing_weight * temporal_smoothing_loss + \
                 self.flow_loss_weight * flow_loss + self.depth_regularize_weight * depth_prior_loss
-        
+
         return loss, flow_loss
-    
+
     def forward_non_batchify(self, epoch=9999):
 
         # --(1) Perform the original pairwise 3D consistency loss (pairwise 3D consistency)--
@@ -998,7 +1007,7 @@ class PointCloudOptimizer(BasePCOptimizer):
             return self.forward_window_wise(epoch)
         else:
             return self.forward_non_batchify(epoch)
-        
+
     def clean_prev_results(self):
         self.n_imgs = self.n_imgs - self.n_prev_frames
         self.im_poses = self.im_poses[self.n_prev_frames:]
@@ -1011,7 +1020,7 @@ class PointCloudOptimizer(BasePCOptimizer):
         self.dynamic_masks = self.dynamic_masks[self.n_prev_frames:]
         if getattr(self, 'sam2_dynamic_masks', None) is not None:
             self.sam2_dynamic_masks = self.sam2_dynamic_masks[self.n_prev_frames:]
-        
+
     def relative_pose_loss(self, RT1, RT2):
         relative_RT = torch.matmul(torch.inverse(RT1), RT2)
         rotation_diff = relative_RT[:, :3, :3]
@@ -1030,6 +1039,16 @@ class PointCloudOptimizer(BasePCOptimizer):
 def _fast_depthmap_to_pts3d(depth, pixel_grid, focal, pp):
     pp = pp.unsqueeze(1)
     focal = focal.unsqueeze(1)
+    if not focal.shape == (len(depth), 1, 1):
+        # Debugpy snippet
+        print("attach debugger now")
+        import debugpy
+        # check if already listening
+        if not debugpy.is_client_connected():
+            debugpy.listen(5679)
+            debugpy.wait_for_client()
+        debugpy.breakpoint()
+
     assert focal.shape == (len(depth), 1, 1)
     assert pp.shape == (len(depth), 1, 2)
     assert pixel_grid.shape == depth.shape + (2,)
